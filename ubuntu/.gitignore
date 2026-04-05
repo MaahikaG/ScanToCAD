@@ -1,0 +1,27 @@
+# ROS2 build artifacts
+build/
+install/
+log/
+
+# Python cache
+__pycache__/
+*.pyc
+*.pyo
+*.egg-info/
+
+# Scan outputs
+scans/
+
+ros_tcp_endpoint/
+
+# Launch pycache
+launch/__pycache__/
+
+# Models (too large for git)
+models/
+ 
+# Docker
+.dockerenv
+
+# OS
+.DS_Store

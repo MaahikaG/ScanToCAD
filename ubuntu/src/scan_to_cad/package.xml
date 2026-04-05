@@ -1,0 +1,23 @@
+<?xml version="1.0"?>
+<package format="3">
+  <name>scan_to_cad</name>
+  <version>0.0.1</version>
+  <description>
+    Spherical-coordinate 3D scanner. Motor 1 rotates a semicircular arm
+    around the Z axis (theta). Motor 2 drives the scanner head along the arc
+    (phi). VL53L0X TOF sensor accumulates a point cloud sent to Unity.
+  </description>
+  <maintainer email="you@example.com">you</maintainer>
+  <license>MIT</license>
+
+  <exec_depend>rclpy</exec_depend>
+  <exec_depend>std_msgs</exec_depend>
+  <exec_depend>sensor_msgs</exec_depend>
+  <exec_depend>nav_msgs</exec_depend>
+  <exec_depend>geometry_msgs</exec_depend>
+  <exec_depend>tf2_ros</exec_depend>
+
+  <export>
+    <build_type>ament_python</build_type>
+  </export>
+</package>

@@ -1,0 +1,16 @@
+# docker/docker-compose.yml
+services:
+  scan_to_cad:
+    platform: linux/arm64          # ← add this
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile
+    volumes:
+      - ../src:/ros2_ws/src          # live-mount your source
+      - ../launch:/ros2_ws/launch
+    network_mode: host               # needed for ROS2 DDS discovery
+    environment:
+      - ROS_DOMAIN_ID=0
+    stdin_open: true
+    tty: true
+    command: bash
