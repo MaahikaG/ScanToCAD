@@ -74,7 +74,7 @@ class PointCloudPublisher(Node):
     def _save_pcd(self, points):
         """Save points as ASCII PCD file without open3d."""
         n = len(points)
-        path = '/ros2_ws/scans/latest.pcd'
+        path = '/ubuntu/scans/latest.pcd'
         with open(path, 'w') as f:
             f.write(f"""# .PCD v0.7
 VERSION 0.7

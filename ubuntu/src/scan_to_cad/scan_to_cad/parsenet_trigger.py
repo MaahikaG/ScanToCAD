@@ -6,7 +6,7 @@ Listens for a trigger from Unity, uploads the completed scan to transfer.sh
 
 Flow:
   Unity publishes True on /run_parsenet
-    → uploads /ros2_ws/scans/latest.pcd to transfer.sh
+    → uploads /ubuntu/scans/latest.pcd to transfer.sh
     → logs a URL, e.g. https://transfer.sh/abc123/latest.pcd
     → paste that URL into the Colab notebook when prompted
 
@@ -25,8 +25,10 @@ from rclpy.node import Node
 from std_msgs.msg import Bool, String
 import requests
 import os
+import time
 
-SCAN_PATH = '/ros2_ws/scans/latest.pcd'
+SCAN_PATH    = '/ubuntu/scans/latest.pcd'
+FILE_TIMEOUT = 15.0   # seconds to wait for point_cloud_pub to finish writing
 
 
 class ParseNetTrigger(Node):
@@ -36,12 +38,29 @@ class ParseNetTrigger(Node):
         self.url_pub = self.create_publisher(String, '/scan_url', 10)
         self.get_logger().info('ParseNet trigger ready')
 
+    def _wait_for_file(self, path):
+        """Block until the file exists and its size has stopped changing."""
+        deadline  = time.time() + FILE_TIMEOUT
+        last_size = -1
+        while time.time() < deadline:
+            if os.path.exists(path):
+                size = os.path.getsize(path)
+                if size > 0 and size == last_size:
+                    return True   # stable — writing complete
+                last_size = size
+            time.sleep(0.3)
+        return False
+
     def _on_trigger(self, msg: Bool):
         if not msg.data:
             return
 
-        if not os.path.exists(SCAN_PATH):
-            self.get_logger().error(f'No scan found at {SCAN_PATH}')
+        self.get_logger().info('Waiting for latest.pcd to be written...')
+        if not self._wait_for_file(SCAN_PATH):
+            self.get_logger().error(
+                f'Timed out waiting for {SCAN_PATH} — '
+                f'did point_cloud_pub save it?'
+            )
             return
 
         self.get_logger().info('Uploading scan to transfer.sh...')
