@@ -11,5 +11,5 @@ def generate_launch_description():
 
         # ── Real software nodes (same as full_system) ─────────────────────────
         Node(package='scan_to_cad', executable='point_cloud_pub', output='screen'),
-        Node(package='scan_to_cad', executable='parsenet_trigger', output='screen'),
+        # Node(package='scan_to_cad', executable='parsenet_trigger', output='screen'),
     ])

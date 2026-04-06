@@ -64,10 +64,16 @@ from rclpy.node import Node
 from nav_msgs.msg import Odometry
 from geometry_msgs.msg import TransformStamped, Vector3
 import tf2_ros
+# try:
+#     import RPi.GPIO as GPIO
+# except RuntimeError:
+#     from rpi_lgpio import GPIO
+
 try:
     import RPi.GPIO as GPIO
-except RuntimeError:
-    from rpi_lgpio import GPIO
+except ImportError:
+    from unittest.mock import MagicMock
+    GPIO = MagicMock()
     
 import math
 
