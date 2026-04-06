@@ -1,35 +1,52 @@
 """
-ADDING PAN TILT WOULD CHANGE THE TF SIGNIFICANTLY AND COMPLICATE IT.
-
 odom_tf_pubs.py
 ───────────────
-Reads both rotary encoders and publishes the scanner head's position using
-a spherical coordinate system matched to the physical mechanism.
+Reads both rotary encoders and publishes the scanner mount's position along
+the gantry arc. The pan-tilt angles come from /pan_tilt/angles and are folded
+into a two-step TF chain so that the 'sensor' frame always reflects the true
+beam direction.
 
 GEOMETRY:
   The semicircle's diameter lies flat in the XY plane, passing through
   the Z axis. The arc bulges upward (+Z). Motor 1 rotates the entire
-  semicircle around the Z axis (θ). Motor 2 drives the scanner head
+  semicircle around the Z axis (θ). Motor 2 drives the scanner mount
   along the arc (φ).
 
   φ = 0°   → home end of diameter, horizontal  → (R, 0, 0) rotated by θ
   φ = 90°  → top of arc, directly above center → (0, 0, R)
   φ = 180° → opposite end of diameter          → (-R, 0, 0) rotated by θ
 
-CARTESIAN CONVERSION:
+CARTESIAN CONVERSION (gantry position):
   x = R · cos(φ) · cos(θ)
   y = R · cos(φ) · sin(θ)
   z = R · sin(φ)
 
+SCANNER HEAD LOCAL FRAME:
+  The frame 'scanner_head' is oriented so that:
+    x-axis = -e_r  (inward toward scan target; sensor zero direction)
+    y-axis = -e_θ  (lateral)
+    z-axis =  e_φ  (upward along the arc)
+  This is the parent frame for the pan-tilt rotation.
+
+TF CHAIN:
+  odom → scanner_head : gantry position + mount orientation (from θ, φ)
+  scanner_head → sensor : pan-tilt rotation (α pan around z, β tilt around y)
+
 Topics published:
   /odom  (nav_msgs/Odometry)
-      position.{x,y,z}      = 3D world-space position of scanner head (metres)
-      twist.twist.linear.x  = θ in degrees  (raw, for point_cloud_pub.py)
-      twist.twist.linear.y  = φ in degrees  (raw, for point_cloud_pub.py)
+      pose.pose.position.{x,y,z}     = 3D position of scanner mount (metres)
+      pose.pose.orientation          = scanner head orientation (from θ, φ)
+      twist.twist.linear.x           = θ in degrees  (raw, for point_cloud_pub)
+      twist.twist.linear.y           = φ in degrees  (raw, for point_cloud_pub)
 
   /tf   (via tf2_ros.TransformBroadcaster)
-      'odom' → 'scanner_head'
-      Used by point_cloud_pub.py to place TOF readings in world space.
+      'odom'         → 'scanner_head'  (gantry position + mount orientation)
+      'scanner_head' → 'sensor'        (pan-tilt rotation)
+
+Topics subscribed:
+  /pan_tilt/angles  (geometry_msgs/Vector3)
+      x = α (pan)  in degrees
+      y = β (tilt) in degrees
 
 GPIO (BCM numbering):
   Encoder 1 (Motor 1, θ):  A=5   B=6
@@ -37,7 +54,7 @@ GPIO (BCM numbering):
 
 Constants to set before running:
   PULSES_PER_REV  — encoder PPR from datasheet
-  ARC_RADIUS_M    — distance from Z axis to scanner head along arm (metres)
+  ARC_RADIUS_M    — distance from Z axis to scanner mount along arm (metres)
   PHI_HOME_DEG    — φ at startup; 0.0 if homed to the φ=0 end of diameter
   THETA_HOME_DEG  — θ at startup; almost always 0.0
 """
@@ -45,15 +62,9 @@ Constants to set before running:
 import rclpy
 from rclpy.node import Node
 from nav_msgs.msg import Odometry
-from geometry_msgs.msg import TransformStamped
+from geometry_msgs.msg import TransformStamped, Vector3
 import tf2_ros
-try:
-    import RPi.GPIO as GPIO
-except ImportError:
-    # Running in Docker/simulation — use a mock
-    from unittest.mock import MagicMock
-    GPIO = MagicMock()
-    
+import RPi.GPIO as GPIO
 import math
 
 # ── GPIO pin assignments (BCM numbering) ──────────────────────────────────────
@@ -66,19 +77,21 @@ PULSES_PER_REV = 600        # Encoder pulses per full shaft revolution (PPR).
                             # x2 quadrature decoding applied in code →
                             # effective resolution = PULSES_PER_REV * 2.
 
-ARC_RADIUS_M   = 0.30       # Distance from the Z axis to the scanner head
-                            # mounting point, measured along the arm (metres).
+ARC_RADIUS_M   = 0.30       # Distance from the Z axis to the scanner mount
+                            # point, measured along the arm (metres).
                             # This is the radius of the semicircle.
                             # Imported by point_cloud_pub.py — only set it here.
 
 PHI_HOME_DEG   = 0.0        # φ angle at startup (degrees).
-                            # 0.0 = head starts at home end of diameter.
+                            # 0.0 = mount starts at home end of diameter.
 
 THETA_HOME_DEG = 0.0        # θ angle at startup. Almost always 0.0.
 
 # ── Derived constant ──────────────────────────────────────────────────────────
 DEGREES_PER_COUNT = 360.0 / (PULSES_PER_REV * 2)
 
+# Exported so point_cloud_pub.py can import ARC_RADIUS_M directly,
+# keeping the value defined in exactly one place.
 __all__ = ['ARC_RADIUS_M']
 
 
@@ -90,6 +103,10 @@ class OdomTfPublisher(Node):
         self.enc1_count = 0
         self.enc2_count = 0
 
+        # ── Pan-tilt state (populated by /pan_tilt/angles subscription) ───────
+        self.alpha_deg = 0.0    # pan  (α)
+        self.beta_deg  = 0.0    # tilt (β)
+
         # ── GPIO setup ────────────────────────────────────────────────────────
         GPIO.setmode(GPIO.BCM)
         for pin in [ENC1_A, ENC1_B, ENC2_A, ENC2_B]:
@@ -98,10 +115,14 @@ class OdomTfPublisher(Node):
         GPIO.add_event_detect(ENC1_A, GPIO.BOTH, callback=self._enc1_cb)
         GPIO.add_event_detect(ENC2_A, GPIO.BOTH, callback=self._enc2_cb)
 
+        # ── ROS subscribers ───────────────────────────────────────────────────
+        self.create_subscription(Vector3, '/pan_tilt/angles', self._pan_tilt_cb, 10)
+
         # ── ROS publishers ────────────────────────────────────────────────────
         self.odom_pub       = self.create_publisher(Odometry, '/odom', 10)
         self.tf_broadcaster = tf2_ros.TransformBroadcaster(self)
 
+        # Publish at 20 Hz
         self.create_timer(0.05, self.publish_odometry)
 
         self.get_logger().info(
@@ -114,24 +135,41 @@ class OdomTfPublisher(Node):
     # ── Quadrature decoding ───────────────────────────────────────────────────
 
     def _enc1_cb(self, channel):
+        """x2 quadrature decode — Motor 1 (θ). A leads B → count up."""
         a = GPIO.input(ENC1_A)
         b = GPIO.input(ENC1_B)
         self.enc1_count += 1 if a != b else -1
 
     def _enc2_cb(self, channel):
+        """x2 quadrature decode — Motor 2 (φ). A leads B → count up."""
         a = GPIO.input(ENC2_A)
         b = GPIO.input(ENC2_B)
         self.enc2_count += 1 if a != b else -1
 
+    # ── Pan-tilt angle subscription ───────────────────────────────────────────
+
+    def _pan_tilt_cb(self, msg: Vector3):
+        """Receive pan (α) and tilt (β) angles in degrees from pan-tilt controller."""
+        self.alpha_deg = msg.x
+        self.beta_deg  = msg.y
+
     # ── Coordinate conversion ─────────────────────────────────────────────────
 
     def _counts_to_angles(self):
+        """Convert raw encoder counts to (theta_deg, phi_deg)."""
         theta_deg = THETA_HOME_DEG + self.enc1_count * DEGREES_PER_COUNT
         phi_deg   = PHI_HOME_DEG   + self.enc2_count * DEGREES_PER_COUNT
         return theta_deg, phi_deg
 
     @staticmethod
     def spherical_to_cartesian(theta_deg: float, phi_deg: float, radius: float):
+        """
+        Convert (θ, φ) to 3D Cartesian (x, y, z).
+
+          x = R · cos(φ) · cos(θ)
+          y = R · cos(φ) · sin(θ)
+          z = R · sin(φ)
+        """
         theta = math.radians(theta_deg)
         phi   = math.radians(phi_deg)
         x = radius * math.cos(phi) * math.cos(theta)
@@ -140,51 +178,85 @@ class OdomTfPublisher(Node):
         return x, y, z
 
     @staticmethod
-    def inward_quaternion(theta_deg: float, phi_deg: float):
+    def _mount_orientation_quat(theta_deg: float, phi_deg: float):
         """
-        Computes orientation quaternion so the sensor points from its
-        current position on the arc inward toward the origin (0, 0, 0).
-        The sensor's default forward axis is assumed to be +X.
-        No pan-tilt needed — the chain drive geometry fully determines
-        the sensor orientation at every position on the arc.
+        Quaternion for the 'scanner_head' frame orientation in the 'odom' frame.
+
+        The scanner_head frame is defined as:
+          x-axis = -e_r  = (-cosφ cosθ, -cosφ sinθ, -sinφ)   inward/forward
+          y-axis = -e_θ  = ( sinθ,       -cosθ,       0)      lateral
+          z-axis =  e_φ  = (-sinφ cosθ, -sinφ sinθ,  cosφ)   up along arc
+
+        This is a right-handed frame: x × y = z.
+
+        The rotation matrix R (columns = frame axes in odom) is converted to a
+        quaternion using Shepperd's method.
+
+        Returns (qx, qy, qz, qw).
         """
-        theta = math.radians(theta_deg)
-        phi   = math.radians(phi_deg)
+        θ = math.radians(theta_deg)
+        φ = math.radians(phi_deg)
 
-        # Unit vector pointing FROM sensor position TOWARD origin
-        dx = -math.cos(phi) * math.cos(theta)
-        dy = -math.cos(phi) * math.sin(theta)
-        dz = -math.sin(phi)
-
-        # Sensor default forward axis (+X)
-        forward = [1.0, 0.0, 0.0]
-        target  = [dx, dy, dz]
-
-        # Rotation axis = cross product of forward and target
-        axis = [
-            forward[1]*target[2] - forward[2]*target[1],
-            forward[2]*target[0] - forward[0]*target[2],
-            forward[0]*target[1] - forward[1]*target[0]
+        # Rotation matrix, column-major (R[:,j] = j-th axis of scanner_head in odom)
+        R = [
+            # row 0
+            [-math.cos(φ)*math.cos(θ),  math.sin(θ), -math.sin(φ)*math.cos(θ)],
+            # row 1
+            [-math.cos(φ)*math.sin(θ), -math.cos(θ), -math.sin(φ)*math.sin(θ)],
+            # row 2
+            [-math.sin(φ),              0.0,           math.cos(φ)             ],
         ]
-        dot   = sum(forward[i]*target[i] for i in range(3))
-        angle = math.acos(max(-1.0, min(1.0, dot)))  # clamp for float safety
 
-        norm = math.sqrt(sum(a**2 for a in axis))
-        if norm < 1e-6:
-            # Already aligned or exactly anti-aligned
-            if dot > 0:
-                return (1.0, 0.0, 0.0, 0.0)         # no rotation needed
-            else:
-                return (0.0, 0.0, 1.0, 0.0)         # 180° around Z
+        trace = R[0][0] + R[1][1] + R[2][2]
+        if trace > 0:
+            s = 0.5 / math.sqrt(trace + 1.0)
+            w = 0.25 / s
+            x = (R[2][1] - R[1][2]) * s
+            y = (R[0][2] - R[2][0]) * s
+            z = (R[1][0] - R[0][1]) * s
+        elif R[0][0] > R[1][1] and R[0][0] > R[2][2]:
+            s = 2.0 * math.sqrt(1.0 + R[0][0] - R[1][1] - R[2][2])
+            w = (R[2][1] - R[1][2]) / s
+            x = 0.25 * s
+            y = (R[0][1] + R[1][0]) / s
+            z = (R[0][2] + R[2][0]) / s
+        elif R[1][1] > R[2][2]:
+            s = 2.0 * math.sqrt(1.0 + R[1][1] - R[0][0] - R[2][2])
+            w = (R[0][2] - R[2][0]) / s
+            x = (R[0][1] + R[1][0]) / s
+            y = 0.25 * s
+            z = (R[1][2] + R[2][1]) / s
+        else:
+            s = 2.0 * math.sqrt(1.0 + R[2][2] - R[0][0] - R[1][1])
+            w = (R[1][0] - R[0][1]) / s
+            x = (R[0][2] + R[2][0]) / s
+            y = (R[1][2] + R[2][1]) / s
+            z = 0.25 * s
+        return x, y, z, w
 
-        axis = [a / norm for a in axis]
-        s = math.sin(angle / 2)
-        return (
-            math.cos(angle / 2),   # w
-            axis[0] * s,           # x
-            axis[1] * s,           # y
-            axis[2] * s            # z
-        )
+    @staticmethod
+    def _pan_tilt_quat(alpha_deg: float, beta_deg: float):
+        """
+        Quaternion for the 'sensor' frame relative to 'scanner_head'.
+
+        Pan  α: rotation around scanner_head +z  (left/right sweep).
+        Tilt β: rotation around scanner_head +y  (up/down tilt).
+
+        Composition: q_z(α) * q_y(β)  — β applied first in the mount frame,
+        then α.  At (α=0, β=0) the sensor's +x axis aligns with mount's +x
+        (pointing inward toward the scan target).
+
+        Returns (qx, qy, qz, qw).
+        """
+        a = math.radians(alpha_deg)
+        b = math.radians(beta_deg)
+        sa, ca = math.sin(a / 2), math.cos(a / 2)
+        sb, cb = math.sin(b / 2), math.cos(b / 2)
+        # Closed-form product of q_z(α) * q_y(β):
+        return (-sa * sb,   # qx
+                 ca * sb,   # qy
+                 sa * cb,   # qz
+                 ca * cb)   # qw
 
     # ── Publish loop ──────────────────────────────────────────────────────────
 
@@ -193,9 +265,9 @@ class OdomTfPublisher(Node):
 
         theta_deg, phi_deg = self._counts_to_angles()
         x, y, z = self.spherical_to_cartesian(theta_deg, phi_deg, ARC_RADIUS_M)
-        qw, qx, qy, qz = self.inward_quaternion(theta_deg, phi_deg)
+        qx, qy, qz, qw = self._mount_orientation_quat(theta_deg, phi_deg)
 
-        # ── Odometry message ──────────────────────────────────────────────────
+        # ── Odometry: gantry position + mount orientation ─────────────────────
         odom = Odometry()
         odom.header.stamp    = now
         odom.header.frame_id = 'odom'
@@ -203,28 +275,44 @@ class OdomTfPublisher(Node):
         odom.pose.pose.position.x    = x
         odom.pose.pose.position.y    = y
         odom.pose.pose.position.z    = z
-        odom.pose.pose.orientation.w = qw
         odom.pose.pose.orientation.x = qx
         odom.pose.pose.orientation.y = qy
         odom.pose.pose.orientation.z = qz
-        # Pack raw angles into unused twist fields for point_cloud_pub.py
+        odom.pose.pose.orientation.w = qw
+        # Raw gantry angles for point_cloud_pub.py
         odom.twist.twist.linear.x = theta_deg
         odom.twist.twist.linear.y = phi_deg
         self.odom_pub.publish(odom)
 
-        # ── TF: odom → scanner_head ───────────────────────────────────────────
-        t = TransformStamped()
-        t.header.stamp       = now
-        t.header.frame_id    = 'odom'
-        t.child_frame_id     = 'scanner_head'
-        t.transform.translation.x = x
-        t.transform.translation.y = y
-        t.transform.translation.z = z
-        t.transform.rotation.w    = qw
-        t.transform.rotation.x    = qx
-        t.transform.rotation.y    = qy
-        t.transform.rotation.z    = qz
-        self.tf_broadcaster.sendTransform(t)
+        # ── TF 1: odom → scanner_head (gantry position + mount orientation) ───
+        t1 = TransformStamped()
+        t1.header.stamp       = now
+        t1.header.frame_id    = 'odom'
+        t1.child_frame_id     = 'scanner_head'
+        t1.transform.translation.x = x
+        t1.transform.translation.y = y
+        t1.transform.translation.z = z
+        t1.transform.rotation.x = qx
+        t1.transform.rotation.y = qy
+        t1.transform.rotation.z = qz
+        t1.transform.rotation.w = qw
+        self.tf_broadcaster.sendTransform(t1)
+
+        # ── TF 2: scanner_head → sensor (pan-tilt rotation only) ──────────────
+        pqx, pqy, pqz, pqw = self._pan_tilt_quat(self.alpha_deg, self.beta_deg)
+
+        t2 = TransformStamped()
+        t2.header.stamp       = now
+        t2.header.frame_id    = 'scanner_head'
+        t2.child_frame_id     = 'sensor'
+        t2.transform.translation.x = 0.0
+        t2.transform.translation.y = 0.0
+        t2.transform.translation.z = 0.0
+        t2.transform.rotation.x = pqx
+        t2.transform.rotation.y = pqy
+        t2.transform.rotation.z = pqz
+        t2.transform.rotation.w = pqw
+        self.tf_broadcaster.sendTransform(t2)
 
     # ── Cleanup ───────────────────────────────────────────────────────────────
 

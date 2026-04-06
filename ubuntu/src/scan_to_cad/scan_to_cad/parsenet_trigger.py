@@ -1,86 +1,77 @@
+"""
+parsenet_trigger.py
+───────────────────
+Listens for a trigger from Unity, uploads the completed scan to transfer.sh
+(no authentication required), and logs the download URL.
+
+Flow:
+  Unity publishes True on /run_parsenet
+    → uploads /ros2_ws/scans/latest.pcd to transfer.sh
+    → logs a URL, e.g. https://transfer.sh/abc123/latest.pcd
+    → paste that URL into the Colab notebook when prompted
+
+Prerequisites on the Pi:
+  pip install requests
+
+Topics subscribed:
+  /run_parsenet  (std_msgs/Bool)  — published True by Unity when ready
+
+Topics published:
+  /scan_url  (std_msgs/String)  — transfer.sh download URL of the latest scan
+"""
+
 import rclpy
 from rclpy.node import Node
-from std_msgs.msg import Bool
-import subprocess
+from std_msgs.msg import Bool, String
+import requests
 import os
-import struct
-import numpy as np
-from scipy.cluster.vq import kmeans2
+
+SCAN_PATH = '/ros2_ws/scans/latest.pcd'
+
 
 class ParseNetTrigger(Node):
     def __init__(self):
         super().__init__('parsenet_trigger')
         self.create_subscription(Bool, '/run_parsenet', self._on_trigger, 10)
-        self.get_logger().info('ParseNet trigger node ready')
+        self.url_pub = self.create_publisher(String, '/scan_url', 10)
+        self.get_logger().info('ParseNet trigger ready')
 
-    def _read_pcd(self, pcd_path):
-        """Read ASCII PCD file into numpy array."""
-        points = []
-        data_started = False
-        with open(pcd_path) as f:
-            for line in f:
-                if line.startswith('DATA'):
-                    data_started = True
-                    continue
-                if data_started:
-                    pts = list(map(float, line.strip().split()))
-                    if len(pts) >= 3:
-                        points.append(pts[:3])
-        return np.array(points)
-
-    def _segment_points(self, points, n_clusters=10):
-        """Segment points into surface clusters using kmeans."""
-        n_clusters = min(n_clusters, len(points))
-        _, labels = kmeans2(points, n_clusters, minit='points', iter=20)
-        return labels
-
-    def _on_trigger(self, msg):
+    def _on_trigger(self, msg: Bool):
         if not msg.data:
             return
 
-        input_pcd    = '/ros2_ws/scans/latest.pcd'
-        annotated    = '/ros2_ws/scans/annotated.txt'
-        output_dir   = '/ros2_ws/scans/point2cad_out'
-        point2cad_dir = '/ros2_ws/models/point2cad'
-
-        os.makedirs(output_dir, exist_ok=True)
-
-        # ── Check input exists ────────────────────────────────────────────────
-        if not os.path.exists(input_pcd):
-            self.get_logger().error(f'No scan found at {input_pcd}')
+        if not os.path.exists(SCAN_PATH):
+            self.get_logger().error(f'No scan found at {SCAN_PATH}')
             return
 
-        # ── Step 1: Read PCD ──────────────────────────────────────────────────
-        self.get_logger().info('Reading point cloud...')
-        points = self._read_pcd(input_pcd)
-        self.get_logger().info(f'Loaded {len(points)} points')
+        self.get_logger().info('Uploading scan to transfer.sh...')
 
-        # ── Step 2: Segment with kmeans ───────────────────────────────────────
-        self.get_logger().info('Segmenting point cloud...')
-        labels = self._segment_points(points)
-        n_segments = len(set(labels))
-        self.get_logger().info(f'Found {n_segments} surface segments')
+        try:
+            with open(SCAN_PATH, 'rb') as f:
+                response = requests.put(
+                    'https://transfer.sh/latest.pcd',
+                    data=f,
+                    timeout=60
+                )
+            response.raise_for_status()
+        except requests.RequestException as e:
+            self.get_logger().error(f'Upload failed: {e}')
+            return
 
-        # Save as (x, y, z, s) for Point2CAD
-        xyzs = np.column_stack([points, labels])
-        np.savetxt(annotated, xyzs, fmt='%.6f %.6f %.6f %d')
-        self.get_logger().info(f'Saved annotated cloud to {annotated}')
+        url = response.text.strip()
 
-        # ── Step 3: Run Point2CAD via Docker ──────────────────────────────────
-        self.get_logger().info('Running Point2CAD...')
-        result = subprocess.run([
-            'docker', 'run', '--rm',
-            '-v', f'{point2cad_dir}:/work/point2cad',
-            'toshas/point2cad:v1',
-            'python', '-m', 'point2cad.main',
-            '--input', annotated,
-            '--output', output_dir
-        ], capture_output=True, text=True)
+        # Publish URL so Unity can display it
+        url_msg = String()
+        url_msg.data = url
+        self.url_pub.publish(url_msg)
 
-        if result.returncode == 0:
-            self.get_logger().info(f'CAD export complete → {output_dir}')
-        else:
-            self.get_logger().error(f'Point2CAD failed:\n{result.stderr}')
+        self.get_logger().info(
+            f'\n'
+            f'  Scan uploaded successfully.\n'
+            f'  URL: {url}\n'
+            f'  Paste this into the Colab notebook when prompted.'
+        )
+
 
 def main():
     rclpy.init()

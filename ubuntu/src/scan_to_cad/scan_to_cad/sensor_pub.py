@@ -14,13 +14,15 @@ Wiring (I2C):
   GND → Pi GND
 
 Install library:
-  pip install VL53L0X
+  pip install adafruit-blinka adafruit-circuitpython-vl53l0x
 """
 
 import rclpy
 from rclpy.node import Node
 from sensor_msgs.msg import Range
-import VL53L0X
+import board
+import busio
+import adafruit_vl53l0x
 
 
 class SensorPublisher(Node):
@@ -28,12 +30,9 @@ class SensorPublisher(Node):
         super().__init__('sensor_pub')
 
         # ── Initialise VL53L0X over I2C ───────────────────────────────────────
-        self.tof = VL53L0X.VL53L0X()
-        self.tof.start_ranging(VL53L0X.Vl53l0xAccuracyMode.BETTER)
-        # Accuracy modes:
-        #   GOOD    — ~30ms/reading,  fastest
-        #   BETTER  — ~66ms/reading,  balanced  ← default
-        #   BEST    — ~200ms/reading, most accurate
+        self._i2c = busio.I2C(board.SCL, board.SDA)
+        self.tof = adafruit_vl53l0x.VL53L0X(self._i2c)
+        self.tof.measurement_timing_budget = 33000  # BETTER mode ~66 ms
 
         # ── Publisher ─────────────────────────────────────────────────────────
         self.pub = self.create_publisher(Range, '/tof/range', 10)
@@ -46,9 +45,9 @@ class SensorPublisher(Node):
     # ── Publish loop ──────────────────────────────────────────────────────────
 
     def publish_range(self):
-        distance_mm = self.tof.get_distance()
+        distance_mm = self.tof.range
 
-        if distance_mm <= 0:
+        if distance_mm >= 8190:
             self.get_logger().warn(
                 'TOF invalid reading — skipping', throttle_duration_sec=5.0
             )
@@ -68,7 +67,7 @@ class SensorPublisher(Node):
     # ── Cleanup ───────────────────────────────────────────────────────────────
 
     def destroy_node(self):
-        self.tof.stop_ranging()
+        self._i2c.deinit()
         super().destroy_node()
 
 

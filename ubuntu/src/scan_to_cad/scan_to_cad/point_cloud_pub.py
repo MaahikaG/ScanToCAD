@@ -96,7 +96,7 @@ DATA ascii
     def _compute_point(d: float, theta_deg: float, phi_deg: float):
         theta = math.radians(theta_deg)
         phi   = math.radians(phi_deg)
-        r     = ARC_RADIUS_M + d
+        r     = ARC_RADIUS_M - d
         x = r * math.cos(phi) * math.cos(theta)
         y = r * math.cos(phi) * math.sin(theta)
         z = r * math.sin(phi)
