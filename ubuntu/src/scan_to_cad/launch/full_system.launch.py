@@ -78,4 +78,13 @@ def generate_launch_description():
             output='screen',
             condition=IfCondition(LaunchConfiguration('scan_nodes')),
         ),
+
+        # ── ParseNet trigger (uploads scan to transfer.sh) ────────────────────
+        Node(
+            package='scan_to_cad',
+            executable='parsenet_trigger',
+            name='parsenet_trigger',
+            output='screen',
+            condition=IfCondition(LaunchConfiguration('scan_nodes')),
+        ),
     ])
