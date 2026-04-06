@@ -6,7 +6,7 @@ Listens for a trigger from Unity, uploads the completed scan to transfer.sh
 
 Flow:
   Unity publishes True on /run_parsenet
-    → uploads /ubuntu/scans/latest.pcd to transfer.sh
+    → uploads /home/mie_g28/scan_to_cad/ubuntu/scans/latest.pcd to transfer.sh
     → logs a URL, e.g. https://transfer.sh/abc123/latest.pcd
     → paste that URL into the Colab notebook when prompted
 
@@ -27,7 +27,7 @@ import requests
 import os
 import time
 
-SCAN_PATH    = '/ubuntu/scans/latest.pcd'
+SCAN_PATH    = '/home/mie_g28/scan_to_cad/ubuntu/scans/latest.pcd'
 FILE_TIMEOUT = 15.0   # seconds to wait for point_cloud_pub to finish writing
 
 
