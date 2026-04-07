@@ -57,10 +57,11 @@ if not os.path.exists(FLAG_PATH):
     pip('pyvista')
     pip('transforms3d')
 
-    # Install PyTorch with CUDA 12.4 support (compatible with CUDA 13.x)
+    # Install PyTorch with CUDA last — force reinstall to override any CPU version
     log('Installing PyTorch with CUDA support...')
     result = subprocess.run(
         [sys.executable, '-m', 'pip', 'install', '-q', '--break-system-packages',
+         '--force-reinstall',
          'torch', 'torchvision',
          '--index-url', 'https://download.pytorch.org/whl/cu124'],
         capture_output=True, text=True
@@ -79,8 +80,11 @@ import numpy as np
 
 # ── Verify GPU ─────────────────────────────────────────────────────────────────
 import torch
+log(f'Python: {sys.executable}')
+log(f'Torch version: {torch.__version__}')
+log(f'CUDA available: {torch.cuda.is_available()}')
 if torch.cuda.is_available():
-    log(f'GPU available: {torch.cuda.get_device_name(0)}')
+    log(f'GPU: {torch.cuda.get_device_name(0)}')
     DEVICE = 'cuda'
 else:
     log('WARNING: GPU not available — running on CPU (will be slow)')
@@ -363,19 +367,26 @@ if not os.path.exists(P2CAD_FLAG):
     subprocess.run(
         f'{sys.executable} -m pip install -q --break-system-packages -r {P2CAD_DIR}/build/requirements.txt',
         shell=True, check=True)
+    # Force reinstall CUDA torch again after requirements.txt may have overwritten it
+    log('Re-pinning PyTorch to CUDA version after Point2CAD deps...')
+    subprocess.run(
+        [sys.executable, '-m', 'pip', 'install', '-q', '--break-system-packages',
+         '--force-reinstall', 'torch', 'torchvision',
+         '--index-url', 'https://download.pytorch.org/whl/cu124'],
+        check=True
+    )
     open(P2CAD_FLAG, 'w').close()
     log('Point2CAD dependencies installed.')
 else:
     log('Point2CAD dependencies already installed — skipping.')
 
-# ── Run Point2CAD with GPU ─────────────────────────────────────────────────────
+# ── Run Point2CAD (GPU auto-detected internally) ───────────────────────────────
 os.chdir(P2CAD_DIR)
 log(f'Running Point2CAD on {DEVICE}...')
 result = subprocess.run(
     f'{sys.executable} -m point2cad.main '
     f'--path_in {XYZC_PATH} '
-    f'--path_out {OUTPUT_DIR} '
-    f'--device {DEVICE}',
+    f'--path_out {OUTPUT_DIR}',
     shell=True, capture_output=True, text=True
 )
 
