@@ -1,0 +1,69 @@
+First run — installing dependencies...
+Installed numpy
+Installed open3d
+Installed geomdl==5.2.9
+Installed h5py
+Installed lap
+Installed scikit-image
+Installed scikit-learn
+Installed scipy
+Installed six
+Installed tensorboard-logger
+Installed trimesh
+Installed pyvista
+Installed transforms3d
+Installing PyTorch with CUDA support...
+pip failed for torch+cuda: ERROR: Could not find a version that satisfies the requirement torch (from versions: none)
+ERROR: No matching distribution found for torch
+
+Dependencies installed.
+Python: /opt/homebrew/opt/python@3.12/bin/python3.12
+Torch version: 2.11.0
+CUDA available: False
+WARNING: GPU not available — running on CPU (will be slow)
+Loading /Users/maahikagupta/ScanToCAD/latest.pcd...
+Loaded 0 points
+Dependencies already installed — skipping.
+Python: /opt/homebrew/opt/python@3.12/bin/python3.12
+Torch version: 2.11.0
+CUDA available: False
+WARNING: GPU not available — running on CPU (will be slow)
+Loading /Users/maahikagupta/ScanToCAD/latest.pcd...
+Loaded 69006 points
+Fitting primitives...
+  Primitive 1: PLANE | normal=[-0.  1.  0.] | 23615 pts
+  Primitive 2: PLANE | normal=[-0.5    0.866 -0.   ] | 15927 pts
+  Primitive 3: PLANE | normal=[ 0.866 -0.5    0.   ] | 12507 pts
+  Primitive 4: PLANE | normal=[1. 0. 0.] | 9087 pts
+  Primitive 5: PLANE | normal=[0.866 0.5   0.   ] | 5585 pts
+  Primitive 6: PLANE | normal=[0.5   0.866 0.   ] | 2285 pts
+  Stopping: only 0 points left
+
+Found 6 primitive(s), 0 unclassified points
+Saved 6 segments to /Users/maahikagupta/ScanToCAD/point2cad_out
+Wrote /Users/maahikagupta/ScanToCAD/scan_prediction.xyzc
+Patched io_utils.py — pymesh removed
+Installing Point2CAD dependencies...
+Re-pinning PyTorch to CUDA version after Point2CAD deps...
+Dependencies already installed — skipping.
+Python: /opt/homebrew/opt/python@3.12/bin/python3.12
+Torch version: 2.11.0
+CUDA available: False
+WARNING: GPU not available — running on CPU (will be slow)
+Loading /Users/maahikagupta/ScanToCAD/latest.pcd...
+Loaded 2701 points
+Fitting primitives...
+  Primitive 1: PLANE | normal=[-0.     1.    -0.001] | 911 pts
+  Primitive 2: PLANE | normal=[-0.694  0.698 -0.176] | 560 pts
+  Primitive 3: PLANE | normal=[ 0.693 -0.692 -0.204] | 408 pts
+  Primitive 4: PLANE | normal=[0.95  0.256 0.178] | 340 pts
+  Primitive 5: PLANE | normal=[ 0.812  0.449 -0.373] | 274 pts
+  Primitive 6: PLANE | normal=[0.692 0.692 0.206] | 208 pts
+  Stopping: only 0 points left
+
+Found 6 primitive(s), 0 unclassified points
+Saved 6 segments to /Users/maahikagupta/ScanToCAD/point2cad_out
+Wrote /Users/maahikagupta/ScanToCAD/scan_prediction.xyzc
+Patched io_utils.py — pymesh removed
+Installing Point2CAD dependencies...
+Re-pinning PyTorch to CUDA version after Point2CAD deps...
