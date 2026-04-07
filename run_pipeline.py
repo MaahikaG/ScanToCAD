@@ -4,9 +4,6 @@
 
 import subprocess, sys, os, json, time, types
 
-# ── Paths ─────────────────────────────────────────────────────────────────────
-import os
-
 sys.stdout.reconfigure(line_buffering=True)
 os.environ['PYTHONUNBUFFERED'] = '1'
 
@@ -20,23 +17,32 @@ P2CAD_DIR  = f'{BASE_DIR}/point2cad'
 SEG_DIR    = f'{BASE_DIR}/point2cad_out'
 FLAG_PATH  = f'{BASE_DIR}/.deps_installed'
 P2CAD_FLAG = f'{BASE_DIR}/.p2cad_deps_installed'
+LOG_PATH   = f'{BASE_DIR}/pipeline.log'
 
 os.makedirs(BASE_DIR, exist_ok=True)
 os.makedirs(OUTPUT_DIR, exist_ok=True)
 os.makedirs(SEG_DIR, exist_ok=True)
 
+# ── Logging ───────────────────────────────────────────────────────────────────
+def log(msg):
+    print(msg)
+    with open(LOG_PATH, 'a') as f:
+        f.write(msg + '\n')
 
+# ── Install dependencies ───────────────────────────────────────────────────────
 if not os.path.exists(FLAG_PATH):
-    print('First run — installing dependencies...')
+    log('First run — installing dependencies...')
+
     def pip(pkg):
         result = subprocess.run(
             [sys.executable, '-m', 'pip', 'install', '-q', '--break-system-packages', pkg],
             capture_output=True, text=True
         )
         if result.returncode != 0:
-            print(f'pip failed for {pkg}: {result.stderr}')
+            log(f'pip failed for {pkg}: {result.stderr}')
         else:
-            print(f'Installed {pkg}')
+            log(f'Installed {pkg}')
+
     pip('numpy')
     pip('open3d')
     pip('geomdl==5.2.9')
@@ -47,26 +53,40 @@ if not os.path.exists(FLAG_PATH):
     pip('scipy')
     pip('six')
     pip('tensorboard-logger')
-    pip('torch')
-    pip('torchvision')
-    pip('transforms3d')
     pip('trimesh')
     pip('pyvista')
+    pip('transforms3d')
+
+    # Install PyTorch with CUDA 12.4 support (compatible with CUDA 13.x)
+    log('Installing PyTorch with CUDA support...')
+    result = subprocess.run(
+        [sys.executable, '-m', 'pip', 'install', '-q', '--break-system-packages',
+         'torch', 'torchvision',
+         '--index-url', 'https://download.pytorch.org/whl/cu124'],
+        capture_output=True, text=True
+    )
+    if result.returncode != 0:
+        log(f'pip failed for torch+cuda: {result.stderr}')
+    else:
+        log('Installed torch with CUDA')
+
     open(FLAG_PATH, 'w').close()
-    print('Dependencies installed.')
+    log('Dependencies installed.')
 else:
-    print('Dependencies already installed — skipping.')
+    log('Dependencies already installed — skipping.')
 
 import numpy as np
 
-LOG_PATH = f'{BASE_DIR}/pipeline.log'
+# ── Verify GPU ─────────────────────────────────────────────────────────────────
+import torch
+if torch.cuda.is_available():
+    log(f'GPU available: {torch.cuda.get_device_name(0)}')
+    DEVICE = 'cuda'
+else:
+    log('WARNING: GPU not available — running on CPU (will be slow)')
+    DEVICE = 'cpu'
 
-def log(msg):
-    print(msg)
-    with open(LOG_PATH, 'a') as f:
-        f.write(msg + '\n')
-
-# ── geomdl numpy compatibility patch (same as Colab patch cell) ───────────────
+# ── geomdl numpy compatibility patch ──────────────────────────────────────────
 import geomdl
 geomdl_path = os.path.dirname(geomdl.__file__)
 for root, dirs, files in os.walk(geomdl_path):
@@ -83,7 +103,7 @@ for root, dirs, files in os.walk(geomdl_path):
                 with open(fpath, 'w') as f:
                     f.write(src)
 
-# ── lapsolver patch (same as Colab patch cell) ────────────────────────────────
+# ── lapsolver patch ────────────────────────────────────────────────────────────
 from scipy.optimize import linear_sum_assignment
 
 lapsolver = types.ModuleType('lapsolver')
@@ -93,7 +113,7 @@ def solve_dense(costs):
 lapsolver.solve_dense = solve_dense
 sys.modules['lapsolver'] = lapsolver
 
-# ── fitting_utils.py patch — remove from parsenet src ────────────────────────
+# ── fitting_utils.py patch ────────────────────────────────────────────────────
 parsenet_fitting = f'{BASE_DIR}/parsenet/src/fitting_utils.py'
 if os.path.exists(parsenet_fitting):
     with open(parsenet_fitting, 'r') as f:
@@ -108,27 +128,21 @@ import open3d as o3d
 if not os.path.exists(PCD_PATH):
     raise FileNotFoundError(f'No PCD at {PCD_PATH} — export from Unity first.')
 
-print(f'Loading {PCD_PATH}...')
+log(f'Loading {PCD_PATH}...')
 pcd = o3d.io.read_point_cloud(PCD_PATH)
-print(f'Loaded {len(pcd.points)} points')
+log(f'Loaded {len(pcd.points)} points')
 
 pcd.estimate_normals(search_param=o3d.geometry.KDTreeSearchParamHybrid(radius=0.05, max_nn=30))
 pcd.orient_normals_consistent_tangent_plane(10)
 
-# ── RANSAC primitive segmentation (same as Colab) ─────────────────────────────
+# ── RANSAC primitive segmentation ─────────────────────────────────────────────
 def fit_primitives(pcd, max_primitives=10, distance_thresh=0.01, min_points=100):
-    """
-    Iteratively fit planes, then cylinders to remaining points using RANSAC.
-    Returns a list of (type, model, inlier_cloud) tuples.
-    """
     remainder = pcd
     primitives = []
-
     for i in range(max_primitives):
         if len(remainder.points) < min_points:
-            print(f'  Stopping: only {len(remainder.points)} points left')
+            log(f'  Stopping: only {len(remainder.points)} points left')
             break
-
         plane_model, inliers = remainder.segment_plane(
             distance_threshold=distance_thresh,
             ransac_n=3,
@@ -136,19 +150,17 @@ def fit_primitives(pcd, max_primitives=10, distance_thresh=0.01, min_points=100)
         )
         inlier_cloud = remainder.select_by_index(inliers)
         remainder    = remainder.select_by_index(inliers, invert=True)
-
         a, b, c, d = plane_model
         normal = np.array([a, b, c])
-        print(f'  Primitive {i+1}: PLANE | normal={np.round(normal,3)} | {len(inliers)} pts')
+        log(f'  Primitive {i+1}: PLANE | normal={np.round(normal,3)} | {len(inliers)} pts')
         primitives.append(('plane', plane_model, inlier_cloud))
-
     return primitives, remainder
 
-print('Fitting primitives...')
+log('Fitting primitives...')
 primitives, leftover = fit_primitives(pcd, max_primitives=8, distance_thresh=0.012)
-print(f'\nFound {len(primitives)} primitive(s), {len(leftover.points)} unclassified points')
+log(f'\nFound {len(primitives)} primitive(s), {len(leftover.points)} unclassified points')
 
-# ── Export segments (same as Colab) ───────────────────────────────────────────
+# ── Export segments ────────────────────────────────────────────────────────────
 if os.path.exists(READY_PATH):
     os.remove(READY_PATH)
 
@@ -169,10 +181,9 @@ with open(f'{SEG_DIR}/primitives.json', 'w') as f:
 if len(leftover.points) > 0:
     o3d.io.write_point_cloud(f'{SEG_DIR}/unclassified.pcd', leftover)
 
-print(f'Saved {len(primitives)} segments to {SEG_DIR}')
-print(json.dumps(results, indent=2))
+log(f'Saved {len(primitives)} segments to {SEG_DIR}')
 
-# ── Convert to .xyzc for Point2CAD (same as Colab) ───────────────────────────
+# ── Convert to .xyzc for Point2CAD ────────────────────────────────────────────
 with open(XYZC_PATH, 'w') as f:
     for segment_id, (prim_type, model, cloud) in enumerate(primitives):
         pts = np.asarray(cloud.points)
@@ -184,16 +195,16 @@ with open(XYZC_PATH, 'w') as f:
         for pt in pts:
             f.write(f'{pt[0]:.6f} {pt[1]:.6f} {pt[2]:.6f} {leftover_id}\n')
 
-print(f'Wrote {XYZC_PATH}')
+log(f'Wrote {XYZC_PATH}')
 
-# ── Clone Point2CAD if not present (same as Colab) ───────────────────────────
+# ── Clone Point2CAD if not present ────────────────────────────────────────────
 if not os.path.exists(P2CAD_DIR):
-    print('Cloning Point2CAD...')
+    log('Cloning Point2CAD...')
     subprocess.run(
         f'git clone https://github.com/prs-eth/point2cad.git {P2CAD_DIR}',
         shell=True, check=True)
 
-# ── Patch io_utils.py — remove pymesh (same as Colab) ────────────────────────
+# ── Patch io_utils.py — remove pymesh ─────────────────────────────────────────
 patched_io_utils = '''import itertools
 import json
 import numpy as np
@@ -330,9 +341,9 @@ def save_topology(clipped_meshes, out_path):
 
 with open(f'{P2CAD_DIR}/point2cad/io_utils.py', 'w') as f:
     f.write(patched_io_utils)
-print('Patched io_utils.py — pymesh removed')
+log('Patched io_utils.py — pymesh removed')
 
-# ── Patch get_device() bug across all Point2CAD files (same as Colab) ─────────
+# ── Patch get_device() bug ─────────────────────────────────────────────────────
 p2c_pkg = f'{P2CAD_DIR}/point2cad'
 for fname in os.listdir(p2c_pkg):
     if not fname.endswith('.py'):
@@ -344,49 +355,50 @@ for fname in os.listdir(p2c_pkg):
         src = src.replace('.get_device()', '.device')
         with open(fpath, 'w') as f:
             f.write(src)
-        print(f'Patched {fname}')
+        log(f'Patched {fname}')
 
-# ── Install Point2CAD dependencies (same as Colab) ───────────────────────────
+# ── Install Point2CAD dependencies ────────────────────────────────────────────
 if not os.path.exists(P2CAD_FLAG):
-    print('Installing Point2CAD dependencies...')
+    log('Installing Point2CAD dependencies...')
     subprocess.run(
         f'{sys.executable} -m pip install -q --break-system-packages -r {P2CAD_DIR}/build/requirements.txt',
         shell=True, check=True)
     open(P2CAD_FLAG, 'w').close()
-    print('Point2CAD dependencies installed.')
+    log('Point2CAD dependencies installed.')
 else:
-    print('Point2CAD dependencies already installed — skipping.')
+    log('Point2CAD dependencies already installed — skipping.')
 
-# ── Run Point2CAD (same as Colab) ─────────────────────────────────────────────
+# ── Run Point2CAD with GPU ─────────────────────────────────────────────────────
 os.chdir(P2CAD_DIR)
-print('Running Point2CAD...')
+log(f'Running Point2CAD on {DEVICE}...')
 result = subprocess.run(
     f'{sys.executable} -m point2cad.main '
     f'--path_in {XYZC_PATH} '
-    f'--path_out {OUTPUT_DIR}',
+    f'--path_out {OUTPUT_DIR} '
+    f'--device {DEVICE}',
     shell=True, capture_output=True, text=True
 )
 
 print(result.stdout)
 if result.returncode != 0:
-    print('STDERR:', result.stderr)
+    log('STDERR: ' + result.stderr)
     raise RuntimeError('Point2CAD failed')
 
-print('\nOutput files:')
+log('\nOutput files:')
 for root, dirs, fnames in os.walk(OUTPUT_DIR):
     for fn in fnames:
         path = os.path.join(root, fn)
-        print(f'  {path}  ({os.path.getsize(path):,} bytes)')
+        log(f'  {path}  ({os.path.getsize(path):,} bytes)')
 
-# ── Export OBJ for Unity (same as Colab) ──────────────────────────────────────
+# ── Export OBJ for Unity ───────────────────────────────────────────────────────
 import trimesh
 
 mesh = trimesh.load(f'{OUTPUT_DIR}/clipped/mesh.ply')
 obj_path = f'{BASE_DIR}/cad_output.obj'
 mesh.export(obj_path)
-print(f'Exported cad_output.obj to {obj_path}')
+log(f'Exported cad_output.obj to {obj_path}')
 
-# ── Signal Unity (same as Colab) ──────────────────────────────────────────────
+# ── Signal Unity ───────────────────────────────────────────────────────────────
 with open(READY_PATH, 'w') as f:
     f.write('READY')
-print('Wrote output_ready.txt — Unity will now load the CAD model')
+log('Wrote output_ready.txt — Unity will now load the CAD model')
