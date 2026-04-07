@@ -6,6 +6,10 @@ import subprocess, sys, os, json, time, types
 
 # ── Paths ─────────────────────────────────────────────────────────────────────
 import os
+
+sys.stdout.reconfigure(line_buffering=True)
+os.environ['PYTHONUNBUFFERED'] = '1'
+
 # ── Paths — must be defined first ─────────────────────────────────────────────
 BASE_DIR   = os.path.expanduser('~/ScanToCAD')
 PCD_PATH   = f'{BASE_DIR}/latest.pcd'
@@ -54,6 +58,13 @@ else:
     print('Dependencies already installed — skipping.')
 
 import numpy as np
+
+LOG_PATH = f'{BASE_DIR}/pipeline.log'
+
+def log(msg):
+    print(msg)
+    with open(LOG_PATH, 'a') as f:
+        f.write(msg + '\n')
 
 # ── geomdl numpy compatibility patch (same as Colab patch cell) ───────────────
 import geomdl
