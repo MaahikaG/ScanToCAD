@@ -409,6 +409,15 @@ obj_path = f'{BASE_DIR}/cad_output.obj'
 mesh.export(obj_path)
 log(f'Exported cad_output.obj to {obj_path}')
 
+# ── Open CAD model in system viewer ───────────────────────────────────────────
+import platform
+ply_path = f'{OUTPUT_DIR}/clipped/mesh.ply'
+
+if platform.system() == 'Windows':
+    os.startfile(ply_path)
+elif platform.system() == 'Darwin':
+    subprocess.run(['open', ply_path])
+
 # ── Signal Unity ───────────────────────────────────────────────────────────────
 with open(READY_PATH, 'w') as f:
     f.write('READY')
